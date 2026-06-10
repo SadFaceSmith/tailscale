@@ -162,9 +162,9 @@ func getChecksums(cache *Cache, tailnet string) func(context.Context, []string) 
 			cache.PrevETag = Shuck(controlEtag)
 		}
 
-		log.Printf("control: %s", controlEtag)
-		log.Printf("local:   %s", localEtag)
-		log.Printf("cache:   %s", cache.PrevETag)
+		fmt.Printf("control=%s\n", controlEtag)
+		fmt.Printf("local=%s\n", localEtag)
+		fmt.Printf("cache=%s\n", cache.PrevETag)
 
 		return nil
 	}
