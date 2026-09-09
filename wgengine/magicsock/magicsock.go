@@ -3925,6 +3925,41 @@ func (c *Conn) UpdateNetmapDelta(muts []netmap.NodeMutation) {
 	c.usingCachedNetmap.Store(false)
 }
 
+// PeerPath returns the current send path for the peer with the given node key.
+// It returns an empty string if the peer or its path is unknown.
+// When path discovery sends through both UDP and DERP, it reports DERP.
+// The receive path can differ, and buffered traffic can use an earlier path.
+func (c *Conn) PeerPath(nodeKey key.NodePublic) Path {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ep, ok := c.peerMap.endpointForNodeKey(nodeKey)
+	if !ok {
+		return ""
+	}
+	ep.mu.Lock()
+	defer ep.mu.Unlock()
+	if ep.expired {
+		return ""
+	}
+	udpAddr, derpAddr, _ := ep.addrForSendLocked(mono.Now())
+	if derpAddr.IsValid() {
+		return PathDERP
+	}
+	if !udpAddr.ap.IsValid() {
+		return ""
+	}
+	if udpAddr.vni.IsSet() {
+		if udpAddr.ap.Addr().Is4() {
+			return PathPeerRelayIPv4
+		}
+		return PathPeerRelayIPv6
+	}
+	if udpAddr.ap.Addr().Is4() {
+		return PathDirectIPv4
+	}
+	return PathDirectIPv6
+}
+
 // UpdateStatus implements the interface needed by ipnstate.StatusBuilder.
 //
 // This method adds in the magicsock-specific information only. Most

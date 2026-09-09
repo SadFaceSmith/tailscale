@@ -20,6 +20,69 @@ import (
 	"tailscale.com/util/ringlog"
 )
 
+func TestPeerPath(t *testing.T) {
+	nodeKey := key.NewNode().Public()
+	derpAddr := netip.AddrPortFrom(tailcfg.DerpMagicIPAddr, 1)
+	v4 := epAddr{ap: netip.MustParseAddrPort("192.0.2.1:1234")}
+	v6 := epAddr{ap: netip.MustParseAddrPort("[2001:db8::1]:1234")}
+	relay4, relay6 := v4, v6
+	relay4.vni.Set(1)
+	relay6.vni.Set(1)
+	for _, tt := range []struct {
+		name    string
+		udp     epAddr
+		derp    netip.AddrPort
+		trusted bool
+		expired bool
+		want    Path
+	}{
+		{name: "no_path"},
+		{name: "derp", derp: derpAddr, want: PathDERP},
+		{name: "direct_ipv4", udp: v4, derp: derpAddr, trusted: true, want: PathDirectIPv4},
+		{name: "direct_ipv6", udp: v6, derp: derpAddr, trusted: true, want: PathDirectIPv6},
+		{name: "peer_relay_ipv4", udp: relay4, derp: derpAddr, trusted: true, want: PathPeerRelayIPv4},
+		{name: "peer_relay_ipv6", udp: relay6, derp: derpAddr, trusted: true, want: PathPeerRelayIPv6},
+		{name: "untrusted_direct", udp: v4, derp: derpAddr, want: PathDERP},
+		{name: "untrusted_relay", udp: relay6, derp: derpAddr, want: PathDERP},
+		{name: "udp_without_derp", udp: v4, want: PathDirectIPv4},
+		{name: "expired_peer", udp: v4, derp: derpAddr, trusted: true, expired: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &Conn{peerMap: newPeerMap()}
+			ep := &endpoint{
+				c:         c,
+				publicKey: nodeKey,
+				bestAddr:  addrQuality{epAddr: tt.udp},
+				derpAddr:  tt.derp,
+				expired:   tt.expired,
+			}
+			if tt.trusted {
+				ep.trustBestAddrUntil = mono.Now().Add(time.Hour)
+			}
+			c.peerMap.byNodeKey[nodeKey] = newPeerInfo(ep)
+			if got := c.PeerPath(nodeKey); got != tt.want {
+				t.Errorf("PeerPath = %q; want %q", got, tt.want)
+			}
+			if got := c.PeerPath(key.NodePublic{}); got != "" {
+				t.Errorf("PeerPath for missing peer = %q; want empty", got)
+			}
+		})
+	}
+
+	// Expired trust changes the reported path on the same endpoint.
+	c := &Conn{peerMap: newPeerMap()}
+	ep := &endpoint{c: c, publicKey: nodeKey, bestAddr: addrQuality{epAddr: v4}, derpAddr: derpAddr}
+	c.peerMap.byNodeKey[nodeKey] = newPeerInfo(ep)
+	ep.trustBestAddrUntil = mono.Now().Add(time.Hour)
+	if got := c.PeerPath(nodeKey); got != PathDirectIPv4 {
+		t.Fatalf("PeerPath = %q; want %q", got, PathDirectIPv4)
+	}
+	ep.trustBestAddrUntil = mono.Now().Add(-time.Hour)
+	if got := c.PeerPath(nodeKey); got != PathDERP {
+		t.Errorf("PeerPath after trust expiry = %q; want %q", got, PathDERP)
+	}
+}
+
 func TestProbeUDPLifetimeConfig_Equals(t *testing.T) {
 	tests := []struct {
 		name string

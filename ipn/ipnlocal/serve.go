@@ -51,6 +51,7 @@ import (
 	"tailscale.com/util/slicesx"
 	"tailscale.com/util/usermetric"
 	"tailscale.com/version"
+	"tailscale.com/wgengine/magicsock"
 )
 
 func init() {
@@ -539,12 +540,24 @@ type serviceMeteredConn struct {
 	net.Conn
 	inbound, outbound *usermetric.MultiLabelMap[serveLabels]
 	key               serveLabels
+	peerPath          func() magicsock.Path
+}
+
+// labels samples the peer's current send path for each completed read or write.
+// TCP buffering and asymmetric paths make this an estimate of the bytes' path.
+func (c *serviceMeteredConn) labels() serveLabels {
+	labels := c.key
+	labels.Path = c.peerPath()
+	if labels.Path == "" {
+		labels.Path = "unknown"
+	}
+	return labels
 }
 
 func (c *serviceMeteredConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
 	if n > 0 {
-		c.inbound.Add(c.key, int64(n))
+		c.inbound.Add(c.labels(), int64(n))
 	}
 	return n, err
 }
@@ -552,7 +565,7 @@ func (c *serviceMeteredConn) Read(p []byte) (int, error) {
 func (c *serviceMeteredConn) Write(p []byte) (int, error) {
 	n, err := c.Conn.Write(p)
 	if n > 0 {
-		c.outbound.Add(c.key, int64(n))
+		c.outbound.Add(c.labels(), int64(n))
 	}
 	return n, err
 }
@@ -572,7 +585,7 @@ func (c *serviceMeteredConn) CloseWrite() error {
 // meteredConnForService wraps c to count peer bytes against the per-Service
 // Serve counters. The per-Service series is never evicted, so it leaks
 // (intentionally) until tailscaled exits.
-func (b *LocalBackend) meteredConnForService(c net.Conn, svc tailcfg.ServiceName) net.Conn {
+func (b *LocalBackend) meteredConnForService(c net.Conn, svc tailcfg.ServiceName, srcAddr netip.AddrPort) net.Conn {
 	// Plain (non-Service) serve passes an empty svc; don't meter it.
 	if svc == "" || b.metrics.serveBytesInbound == nil || b.metrics.serveBytesOutbound == nil {
 		return c
@@ -582,6 +595,16 @@ func (b *LocalBackend) meteredConnForService(c net.Conn, svc tailcfg.ServiceName
 		inbound:  b.metrics.serveBytesInbound,
 		outbound: b.metrics.serveBytesOutbound,
 		key:      serveLabels{Service: svc.String()},
+		peerPath: func() magicsock.Path {
+			if !srcAddr.IsValid() {
+				return ""
+			}
+			peer, ok := b.PeerForIP(srcAddr.Addr())
+			if !ok || peer.IsSelf {
+				return ""
+			}
+			return b.MagicConn().PeerPath(peer.Node.Key())
+		},
 	}
 }
 
@@ -657,13 +680,13 @@ func (b *LocalBackend) tcpHandlerForServeTCP(tcph ipn.TCPPortHandlerView, dport 
 		if tcph.HTTPS() {
 			hs.TLSConfig = b.serveTLSConfig(b.getTLSServeCertForPort(dport, forVIPService), serveTLSNextProtos())
 			return func(c net.Conn) error {
-				c = b.meteredConnForService(c, forVIPService)
+				c = b.meteredConnForService(c, forVIPService, srcAddr)
 				return hs.ServeTLS(netutil.NewOneConnListener(c, nil), "", "")
 			}
 		}
 
 		return func(c net.Conn) error {
-			c = b.meteredConnForService(c, forVIPService)
+			c = b.meteredConnForService(c, forVIPService, srcAddr)
 			return hs.Serve(netutil.NewOneConnListener(c, nil))
 		}
 	}
@@ -671,7 +694,7 @@ func (b *LocalBackend) tcpHandlerForServeTCP(tcph ipn.TCPPortHandlerView, dport 
 	if backDst := tcph.TCPForward(); backDst != "" {
 		return func(conn net.Conn) error {
 			defer conn.Close()
-			conn = b.meteredConnForService(conn, forVIPService)
+			conn = b.meteredConnForService(conn, forVIPService, srcAddr)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			var backConn net.Conn
 			var err error

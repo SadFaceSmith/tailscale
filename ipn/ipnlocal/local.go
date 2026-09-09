@@ -521,18 +521,19 @@ type metrics struct {
 	approvedRoutes *usermetric.Gauge
 
 	// serveBytesInbound counts bytes received from peers on Serve connections
-	// for Tailscale Services, labeled by Service name. Plain (non-Service)
-	// serve and funnel traffic is not counted.
+	// for Tailscale Services, labeled by Service name and current peer path.
+	// These counters exclude plain (non-Service) Serve and Funnel traffic.
 	serveBytesInbound *usermetric.MultiLabelMap[serveLabels]
 
 	// serveBytesOutbound counts bytes sent to peers on Serve connections for
-	// Tailscale Services, labeled by Service name. Plain (non-Service) serve
-	// and funnel traffic is not counted.
+	// Tailscale Services, labeled by Service name and current peer path.
+	// These counters exclude plain (non-Service) Serve and Funnel traffic.
 	serveBytesOutbound *usermetric.MultiLabelMap[serveLabels]
 }
 
 type serveLabels struct {
-	Service string `prom:"service"`
+	Service string         `prom:"service"`
+	Path    magicsock.Path `prom:"path"`
 }
 
 // clientGen is a func that creates a control plane client.
@@ -583,12 +584,12 @@ func NewLocalBackend(logf logger.Logf, logID logid.PublicID, sys *tsd.System, lo
 			sys.UserMetricsRegistry(),
 			"tailscaled_serve_inbound_bytes_total",
 			"counter",
-			"Bytes received from peers on Serve connections for Tailscale Services, labeled by Tailscale Service name."),
+			"Bytes received from peers on Serve connections for Tailscale Services, labeled by Tailscale Service name and current peer path (approximate)."),
 		serveBytesOutbound: usermetric.NewMultiLabelMapWithRegistry[serveLabels](
 			sys.UserMetricsRegistry(),
 			"tailscaled_serve_outbound_bytes_total",
 			"counter",
-			"Bytes sent to peers on Serve connections for Tailscale Services, labeled by Tailscale Service name."),
+			"Bytes sent to peers on Serve connections for Tailscale Services, labeled by Tailscale Service name and current peer path (approximate)."),
 	}
 
 	b := &LocalBackend{
